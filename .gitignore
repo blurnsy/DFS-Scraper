@@ -40,3 +40,9 @@ Thumbs.db
 
 # Downloaded files
 downloaded_files/
+
+# Service account keys and sensitive credentials
+service-account-key.json
+*.json
+!package.json
+!package-lock.json
