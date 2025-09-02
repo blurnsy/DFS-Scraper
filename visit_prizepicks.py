@@ -36,8 +36,41 @@ def setup_google_sheets():
         print("Please ensure you have a service account key file named 'service-account-key.json'")
         return None
 
+def read_existing_sheet_data(service, spreadsheet_id, sheet_name):
+    """Read existing data from the sheet to preserve Actual and Over/Under columns"""
+    try:
+        # Read all data from the sheet
+        range_name = f"'{sheet_name}'!A:I"
+        result = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=range_name
+        ).execute()
+        
+        values = result.get('values', [])
+        if not values:
+            return {}
+        
+        # Skip header row and build a lookup dictionary
+        existing_data = {}
+        for i, row in enumerate(values[1:], start=2):  # Start from row 2 (skip header)
+            if len(row) >= 6:  # Ensure we have at least the basic columns
+                # Create a unique key from player name, team, opponent, and game time
+                player_key = f"{row[0]}|{row[2]}|{row[3]}|{row[4]}".lower().strip()
+                existing_data[player_key] = {
+                    'row_index': i,
+                    'line': row[5] if len(row) > 5 else '',
+                    'actual': row[7] if len(row) > 7 else '',
+                    'over_under': row[8] if len(row) > 8 else '',
+                    'payout_type': row[6] if len(row) > 6 else 'Standard'
+                }
+        
+        return existing_data
+    except Exception as e:
+        print(f"Error reading existing sheet data: {e}")
+        return {}
+
 def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
-    """Create or update a worksheet with the scraped data"""
+    """Create or update a worksheet with smart line updates only"""
     try:
         # Define the column headers based on your spreadsheet layout
         headers = [
@@ -52,28 +85,8 @@ def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
             "Over/Under"
         ]
         
-        # Prepare data rows
-        rows = [headers]  # First row is headers
-        
-        for player in data:
-            # Extract the line value (projection) from the player data
-            line_value = player.get('value', '')
-            
-            # Create row matching your column structure
-            row = [
-                player.get('name', ''),           # Player Name
-                player.get('position', ''),       # Position
-                player.get('team', ''),           # Team
-                player.get('opponent', ''),       # Opponent
-                player.get('game_time', ''),      # Game Time
-                line_value,                       # Line (projection value)
-                player.get('payout_type', 'Standard'),  # Payout Type
-                '',                               # Actual (empty for now)
-                ''                                # Over/Under (empty for now)
-            ]
-            rows.append(row)
-        
         # Check if sheet exists, if not create it
+        sheet_exists = True
         try:
             # Try to get the sheet
             sheet_metadata = service.spreadsheets().get(
@@ -95,21 +108,94 @@ def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
                 spreadsheetId=spreadsheet_id,
                 body={'requests': [request]}
             ).execute()
+            sheet_exists = False
         
-        # Update the sheet with data
-        range_name = f"'{sheet_name}'!A1"
-        body = {
-            'values': rows
-        }
+        # Read existing data if sheet exists
+        existing_data = {}
+        if sheet_exists:
+            existing_data = read_existing_sheet_data(service, spreadsheet_id, sheet_name)
         
-        result = service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=range_name,
-            valueInputOption='RAW',
-            body=body
-        ).execute()
+        # Prepare data for update
+        rows_to_update = []
+        new_rows = []
+        updated_count = 0
+        unchanged_count = 0
         
-        print(f"Updated {sheet_name} with {len(data)} players")
+        for player in data:
+            # Create unique key for this player
+            player_key = f"{player.get('name', '')}|{player.get('team', '')}|{player.get('opponent', '')}|{player.get('game_time', '')}".lower().strip()
+            new_line_value = player.get('value', '')
+            
+            if player_key in existing_data:
+                # Player exists, check if line has changed
+                existing_line = existing_data[player_key]['line']
+                if existing_line != new_line_value:
+                    # Line has changed, update it
+                    row_index = existing_data[player_key]['row_index']
+                    rows_to_update.append({
+                        'range': f"'{sheet_name}'!F{row_index}",
+                        'values': [[new_line_value]]
+                    })
+                    updated_count += 1
+                    print(f"  Updating {player.get('name', '')} line: {existing_line} → {new_line_value}")
+                else:
+                    # Line unchanged, skip update
+                    unchanged_count += 1
+                    print(f"  Skipping {player.get('name', '')} (line unchanged: {new_line_value})")
+            else:
+                # New player, add to new rows
+                row = [
+                    player.get('name', ''),           # Player Name
+                    player.get('position', ''),       # Position
+                    player.get('team', ''),           # Team
+                    player.get('opponent', ''),       # Opponent
+                    player.get('game_time', ''),      # Game Time
+                    new_line_value,                   # Line (projection value)
+                    player.get('payout_type', 'Standard'),  # Payout Type
+                    '',                               # Actual (empty for new players)
+                    ''                                # Over/Under (empty for new players)
+                ]
+                new_rows.append(row)
+        
+        # Perform updates
+        if rows_to_update:
+            # Update existing rows with changed lines
+            body = {
+                'valueInputOption': 'RAW',
+                'data': rows_to_update
+            }
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body=body
+            ).execute()
+            print(f"  Updated {updated_count} existing players with new line values")
+        
+        if new_rows:
+            # Add new players to the sheet
+            if not sheet_exists:
+                # If it's a new sheet, add headers and all data
+                all_rows = [headers] + new_rows
+                range_name = f"'{sheet_name}'!A1"
+                body = {'values': all_rows}
+            else:
+                # Append new rows to existing sheet
+                range_name = f"'{sheet_name}'!A:I"
+                body = {'values': new_rows}
+            
+            service.spreadsheets().values().append(
+                spreadsheetId=spreadsheet_id,
+                range=range_name,
+                valueInputOption='RAW',
+                body=body
+            ).execute()
+            print(f"  Added {len(new_rows)} new players")
+        
+        print(f"Smart update completed for {sheet_name}:")
+        print(f"  - Updated: {updated_count} players")
+        print(f"  - Unchanged: {unchanged_count} players") 
+        print(f"  - New: {len(new_rows)} players")
+        print(f"  - Total processed: {len(data)} players")
+        
         return True
         
     except Exception as e:
@@ -314,10 +400,9 @@ def scrape_prop_type(sb, stat_name):
     
     return player_projections
 
-def get_all_stat_types(sb):
-    """Get specific stat types to scrape"""
-    # Predefined list of stat types to scrape
-    stat_types = [
+def get_all_stat_types():
+    """Get all available stat types"""
+    return [
         "Pass Yards",
         "Rush Yards", 
         "Pass TDs",
@@ -336,14 +421,74 @@ def get_all_stat_types(sb):
         "Kicking Points",
         "Tackles+Ast"
     ]
+
+def display_menu():
+    """Display CLI menu for stat type selection"""
+    stat_types = get_all_stat_types()
     
-    print(f"Will scrape {len(stat_types)} specific stat types: {stat_types}")
+    print("\n" + "="*50)
+    print("PRIZEPICKS SCRAPER - STAT TYPE SELECTION")
+    print("="*50)
+    print("Select which prop type you want to scrape:")
+    print()
+    
+    for i, stat_type in enumerate(stat_types, 1):
+        print(f"{i:2d}) {stat_type}")
+    
+    print(f"{len(stat_types) + 1:2d}) All Stats")
+    print()
+    
     return stat_types
+
+def get_user_selection():
+    """Get and validate user selection from menu"""
+    stat_types = display_menu()
+    
+    while True:
+        try:
+            choice = input("Enter your choice (1-{}): ".format(len(stat_types) + 1)).strip()
+            
+            if not choice:
+                print("Please enter a valid choice.")
+                continue
+                
+            choice_num = int(choice)
+            
+            if choice_num == len(stat_types) + 1:
+                return stat_types  # All stats
+            elif 1 <= choice_num <= len(stat_types):
+                return [stat_types[choice_num - 1]]  # Single stat type
+            else:
+                print(f"Please enter a number between 1 and {len(stat_types) + 1}")
+                
+        except ValueError:
+            print("Please enter a valid number.")
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            exit(0)
+
+def ask_continue():
+    """Ask if user wants to scrape more stats"""
+    while True:
+        try:
+            response = input("\nWould you like to scrape more stats? (y/n): ").strip().lower()
+            
+            if response in ['y', 'yes']:
+                return True
+            elif response in ['n', 'no']:
+                return False
+            else:
+                print("Please enter 'y' for yes or 'n' for no.")
+                
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            exit(0)
 
 # Configuration
 SPREADSHEET_ID = "1H9HcjtjoG9AlRJ3lAvgZXpefYfuVcylwqc4D4B_Ai1g"  # Replace with your actual spreadsheet ID
 
-with SB(uc=True, test=True, locale="en", ad_block=True) as sb:
+def initialize_browser_session(sb):
+    """Initialize the browser session with PrizePicks setup"""
     # Setup Google Sheets
     sheets_service = setup_google_sheets()
     if not sheets_service:
@@ -351,6 +496,7 @@ with SB(uc=True, test=True, locale="en", ad_block=True) as sb:
     
     url = "https://app.prizepicks.com/"
     sb.activate_cdp_mode(url)
+    
     # Click "Accept All" button if it appears (cookie consent)
     try:
         sb.cdp.click('button#ketch-banner-button-primary')
@@ -406,12 +552,17 @@ with SB(uc=True, test=True, locale="en", ad_block=True) as sb:
     sb.cdp.sleep(2)
     
     print("NFL tab clicked successfully!")
+    print("Browser session ready!")
     
-    # Get all available stat types
-    stat_types = get_all_stat_types(sb)
+    return sheets_service
+
+def scrape_selected_stats(sb, sheets_service, selected_stat_types):
+    """Scrape the selected stat types"""
+    # Use the stat types selected by the user
+    stat_types = selected_stat_types
     
     if not stat_types:
-        print("No stat types found. Falling back to Pass Yards only.")
+        print("No stat types selected. Falling back to Pass Yards only.")
         stat_types = ["Pass Yards"]
     
     # Scrape all prop types
@@ -478,5 +629,45 @@ with SB(uc=True, test=True, locale="en", ad_block=True) as sb:
     else:
         print(f"\n⚠ Google Sheets integration not configured")
         print(f"  To enable, update SPREADSHEET_ID and ensure service-account-key.json is present")
+
+def run_scraping_session(selected_stat_types):
+    """Run a single scraping session with the selected stat types"""
+    print(f"\nSelected stat type(s): {', '.join(selected_stat_types)}")
+    print("Starting browser session...")
     
-    sb.cdp.sleep(2.5)
+    with SB(uc=True, test=True, locale="en", ad_block=True) as sb:
+        # Initialize the browser session
+        sheets_service = initialize_browser_session(sb)
+        
+        # Scrape the selected stats
+        scrape_selected_stats(sb, sheets_service, selected_stat_types)
+        
+        sb.cdp.sleep(2.5)
+
+# Main execution loop
+def main():
+    """Main execution function with continuous scraping loop"""
+    print("Welcome to PrizePicks Scraper!")
+    print("This tool will help you scrape player projections from PrizePicks.")
+    
+    try:
+        while True:
+            # Get user selection
+            selected_stat_types = get_user_selection()
+            
+            # Run scraping session
+            run_scraping_session(selected_stat_types)
+            
+            # Ask if user wants to continue
+            if not ask_continue():
+                print("\nThank you for using PrizePicks Scraper!")
+                break
+                
+    except KeyboardInterrupt:
+        print("\n\nExiting...")
+    except Exception as e:
+        print(f"\nAn error occurred: {e}")
+
+# Run the main function
+if __name__ == "__main__":
+    main()
