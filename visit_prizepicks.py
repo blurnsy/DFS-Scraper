@@ -6,17 +6,42 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 import json
+from datetime import datetime, timedelta
+import re
+from termcolor import cprint
+import monitor
 
 def show_mouse_coordinates():
-    """Display mouse coordinates in real-time"""
-    while True:
-        try:
-            x, y = pyautogui.position()
-            print(f"\rMouse position: ({x}, {y})", end="", flush=True)
-            time.sleep(0.1)
-        except KeyboardInterrupt:
-            break
-    print()  # New line after stopping
+    """Display mouse coordinates in real-time - redirects to utils"""
+    import sys
+    sys.path.append('utils')
+    from mouse_coordinates import display_mouse_coordinates
+    display_mouse_coordinates()
+
+# Game time parsing moved to monitor.py
+
+# Game time reading moved to monitor.py
+
+# Upcoming games detection moved to monitor.py
+
+def run_final_scraping_for_game(game_info, sheets_service):
+    """Run final scraping session for a specific game"""
+    cprint(f"🚀 Opening browser for FINAL scraping of {game_info['team']} vs {game_info['opponent']}...", "green", attrs=["bold"])
+    
+    with SB(uc=True, test=True, locale="en", ad_block=True) as sb:
+        # Initialize the browser session
+        initialize_browser_session(sb)
+        
+        # Run full scraping session for all stat types
+        all_stat_types = get_all_stat_types()
+        scrape_selected_stats(sb, sheets_service, all_stat_types)
+        
+        cprint(f"✅ Final scraping completed for {game_info['team']} vs {game_info['opponent']}", "green", attrs=["bold"])
+        cprint(f"   This was the last scrape before the game starts!", "yellow")
+
+# Next game info moved to monitor.py
+
+# Game monitoring moved to monitor.py
 
 def setup_google_sheets():
     """Setup Google Sheets API connection"""
@@ -32,8 +57,8 @@ def setup_google_sheets():
         service = build('sheets', 'v4', credentials=credentials)
         return service
     except Exception as e:
-        print(f"Error setting up Google Sheets: {e}")
-        print("Please ensure you have a service account key file named 'service-account-key.json'")
+        cprint(f"Error setting up Google Sheets: {e}", "red")
+        cprint("Please ensure you have a service account key file named 'service-account-key.json'", "yellow")
         return None
 
 def read_existing_sheet_data(service, spreadsheet_id, sheet_name):
@@ -66,7 +91,7 @@ def read_existing_sheet_data(service, spreadsheet_id, sheet_name):
         
         return existing_data
     except Exception as e:
-        print(f"Error reading existing sheet data: {e}")
+        cprint(f"Error reading existing sheet data: {e}", "red")
         return {}
 
 def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
@@ -95,7 +120,7 @@ def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
             ).execute()
         except:
             # Sheet doesn't exist, create it
-            print(f"Creating new worksheet: {sheet_name}")
+            cprint(f"Creating new worksheet: {sheet_name}", "green", attrs=["bold"])
             request = {
                 'addSheet': {
                     'properties': {
@@ -137,11 +162,11 @@ def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
                         'values': [[new_line_value]]
                     })
                     updated_count += 1
-                    print(f"  Updating {player.get('name', '')} line: {existing_line} → {new_line_value}")
+                    cprint(f"  Updating {player.get('name', '')} line: {existing_line} → {new_line_value}", "yellow")
                 else:
                     # Line unchanged, skip update
                     unchanged_count += 1
-                    print(f"  Skipping {player.get('name', '')} (line unchanged: {new_line_value})")
+                    cprint(f"  Skipping {player.get('name', '')} (line unchanged: {new_line_value})", "cyan")
             else:
                 # New player, add to new rows
                 row = [
@@ -168,7 +193,7 @@ def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
                 spreadsheetId=spreadsheet_id,
                 body=body
             ).execute()
-            print(f"  Updated {updated_count} existing players with new line values")
+            cprint(f"  Updated {updated_count} existing players with new line values", "green")
         
         if new_rows:
             # Add new players to the sheet
@@ -188,65 +213,114 @@ def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
                 valueInputOption='RAW',
                 body=body
             ).execute()
-            print(f"  Added {len(new_rows)} new players")
+            cprint(f"  Added {len(new_rows)} new players", "green")
         
-        print(f"Smart update completed for {sheet_name}:")
-        print(f"  - Updated: {updated_count} players")
-        print(f"  - Unchanged: {unchanged_count} players") 
-        print(f"  - New: {len(new_rows)} players")
-        print(f"  - Total processed: {len(data)} players")
+        cprint(f"Smart update completed for {sheet_name}:", "green", attrs=["bold"])
+        cprint(f"  - Updated: {updated_count} players", "yellow")
+        cprint(f"  - Unchanged: {unchanged_count} players", "cyan") 
+        cprint(f"  - New: {len(new_rows)} players", "green")
+        cprint(f"  - Total processed: {len(data)} players", "white")
         
         return True
         
     except Exception as e:
-        print(f"Error updating sheet {sheet_name}: {e}")
+        cprint(f"Error updating sheet {sheet_name}: {e}", "red")
+        return False
+
+def is_live_betting_player(card):
+    """Check if a player card indicates live betting (game has started)"""
+    try:
+        # Look for the "Starting" indicator div with specific classes
+        starting_indicator = card.query_selector('div.body-xs.absolute.left-2.top-2.flex.items-center.gap-1.p-1')
+        if starting_indicator:
+            starting_text = starting_indicator.text.strip().lower()
+            if 'starting' in starting_text:
+                return True
+        
+        # Alternative selector patterns for "Starting" indicator
+        starting_divs = card.query_selector_all('div[class*="absolute"][class*="left-2"][class*="top-2"]')
+        for div in starting_divs:
+            if 'starting' in div.text.strip().lower():
+                return True
+        
+        # Look for any div containing "Starting" text (broader search)
+        all_divs = card.query_selector_all('div')
+        for div in all_divs:
+            div_text = div.text.strip().lower()
+            if div_text == 'starting' or 'starting' in div_text:
+                # Make sure it's not just part of a longer word
+                if div_text == 'starting' or div_text.startswith('starting ') or div_text.endswith(' starting'):
+                    return True
+        
+        # Look for "Live" indicators as well
+        live_indicators = card.query_selector_all('*')
+        for element in live_indicators:
+            element_text = element.text.strip().lower()
+            if element_text == 'live' or 'live betting' in element_text:
+                return True
+                
+        return False
+    except Exception as e:
+        # If there's an error checking, assume it's not live betting
         return False
 
 def scrape_prop_type(sb, stat_name):
     """Scrape player projections for a specific prop type"""
-    print(f"\n=== Scraping {stat_name} ===")
+    cprint(f"\n=== Scraping {stat_name} ===", "cyan", attrs=["bold"])
     
     # Click on the specific stat button
     try:
         sb.cdp.click(f'//button[contains(@class, "stat") and text()="{stat_name}"]')
         sb.cdp.sleep(2)
-        print(f"{stat_name} button clicked successfully!")
+        cprint(f"{stat_name} button clicked successfully!", "green")
     except Exception as e:
-        print(f"Error clicking {stat_name} button: {e}")
+        cprint(f"Error clicking {stat_name} button: {e}", "red")
         return []
     
     # Wait for projections to load and scrape player data
-    print("Waiting for player projections to load...")
+    cprint("Waiting for player projections to load...", "cyan")
     try:
         sb.cdp.wait_for_element_visible('ul[aria-label="Projections List"]', timeout=10)
         sb.cdp.sleep(2)
     except Exception as e:
-        print(f"Error waiting for projections to load: {e}")
+        cprint(f"Error waiting for projections to load: {e}", "red")
         return []
     
     # Scrape player projections
-    print("Scraping player projections...")
+    cprint("Scraping player projections...", "cyan")
     player_projections = []
+    live_betting_skipped = 0
     
     # Get all player cards from the projections list
     player_cards = sb.cdp.select_all('ul[aria-label="Projections List"] li')
     
     for card in player_cards:
         try:
+            # Check if this is a live betting player (game has started)
+            if SKIP_LIVE_BETTING and is_live_betting_player(card):
+                # Get player name for logging
+                name_elem = card.query_selector('h3[id="test-player-name"]')
+                if not name_elem:
+                    name_elem = card.query_selector('h3[aria-label="name"]')
+                player_name = name_elem.text.strip() if name_elem else "Unknown Player"
+                cprint(f"🚫 Skipping {player_name} - Game has started (Live Betting)", "red")
+                live_betting_skipped += 1
+                continue
+            
             # Check if this card has the "Money Mouth" image (skip these)
             money_mouth_img = card.query_selector('img[alt="Money Mouth"]')
             if money_mouth_img:
-                print(f"Skipping player with Money Mouth indicator")
+                cprint(f"Skipping player with Money Mouth indicator", "yellow")
                 continue
             
             # Check if this card has a "Goblin" or "Demon" indicator
             goblin_img = card.query_selector('img[alt="Goblin"]')
             demon_img = card.query_selector('img[alt="Demon"]')
-            payout_type = "Standard"
+            payout_type = "Standard"  # Default to Standard
             
             if goblin_img or demon_img:
                 indicator_type = "Goblin" if goblin_img else "Demon"
-                print(f"Found {indicator_type} indicator")
+                cprint(f"Found {indicator_type} indicator", "magenta")
                 
                 # Check if there's a test-projection-swap button
                 swap_button = card.query_selector('button#test-projection-swap')
@@ -266,12 +340,26 @@ def scrape_prop_type(sb, stat_name):
                     player_name = player_name_elem.text.strip()
                     print(f"  Player name captured: {player_name}")
                     
-                    # Click the test-projection-swap button until we find a clean prop line
+                    # Store the original card state (first appearance on page)
+                    original_goblin = goblin_img
+                    original_demon = demon_img
+                    original_indicator_type = indicator_type
+                    
+                    # Get the original projection value
+                    original_value_elem = card.query_selector('span.duration-300.ease-in')
+                    original_projection = original_value_elem.text.strip() if original_value_elem else ""
+                    
+                    # Track all seen lines for logging
+                    all_seen_lines = []
+                    all_seen_lines.append(f"{original_projection} {original_indicator_type}")
+                    
+                    # Click the test-projection-swap button until we find a Standard card or exhaust all swaps
                     max_attempts = 10  # Prevent infinite loops
                     attempts = 0
-                    found_clean_prop = False
+                    found_standard_card = False
+                    seen_projections = set()  # Track unique projections to detect when we've cycled through all
                     
-                    while attempts < max_attempts and not found_clean_prop:
+                    while attempts < max_attempts and not found_standard_card:
                         attempts += 1
                         print(f"  Attempt {attempts}: Clicking test-projection-swap...")
                         
@@ -279,27 +367,64 @@ def scrape_prop_type(sb, stat_name):
                         swap_button = card.query_selector('button#test-projection-swap')
                         if swap_button:
                             swap_button.click()
-                            sb.cdp.sleep(1)  # Wait for prop line to update
+                            sb.cdp.sleep(2)  # Wait for prop line to update and DOM to stabilize
                             
-                            # Check if indicator is still present
+                            # Check if we now have a Standard card (no indicators)
                             current_goblin = card.query_selector('img[alt="Goblin"]')
                             current_demon = card.query_selector('img[alt="Demon"]')
+                            
+                            # Get the new projection value
+                            new_value_elem = card.query_selector('span.duration-300.ease-in')
+                            new_projection = new_value_elem.text.strip() if new_value_elem else ""
+                            
+                            # More robust check for Standard card - ensure no indicators are present
                             if not current_goblin and not current_demon:
-                                print(f"  Found clean prop line after {attempts} attempts!")
-                                found_clean_prop = True
+                                # Double-check by looking for any indicator images
+                                any_indicators = card.query_selector_all('img[alt="Goblin"], img[alt="Demon"]')
+                                if not any_indicators:
+                                    all_seen_lines.append(f"{new_projection} Standard")
+                                    print(f"  Found Standard card after {attempts} attempts!")
+                                    found_standard_card = True
+                                    break  # Stop immediately when we find a Standard card
+                                else:
+                                    print(f"  False positive - indicators still present, continuing...")
                             else:
-                                print(f"  {indicator_type} still present, trying again...")
+                                # Track this line
+                                current_indicator = "Goblin" if current_goblin else "Demon"
+                                all_seen_lines.append(f"{new_projection} {current_indicator}")
+                                
+                                # Check if we've seen this projection before (indicating we've cycled through all options)
+                                if new_projection in seen_projections:
+                                    print(f"  Cycled through all available swaps ({attempts} attempts)")
+                                    break
+                                
+                                seen_projections.add(new_projection)
+                                print(f"  Still {current_indicator} card, projection: {new_projection}, trying again...")
                         else:
                             print(f"  No swap button found, skipping this player")
                             break
                     
-                    if not found_clean_prop:
-                        print(f"  Could not find clean prop line after {max_attempts} attempts, skipping player")
-                        continue
+                    # Log all seen lines
+                    lines_text = ", ".join(all_seen_lines)
+                    print(f"  All lines seen: {lines_text}")
+                    
+                    if not found_standard_card:
+                        if attempts >= max_attempts:
+                            print(f"  Reached max attempts ({max_attempts})")
+                        print(f"  No clean card option found - Grabbing {original_indicator_type}")
+                        # Reset to original card state
+                        payout_type = original_indicator_type
+                        selected_line = f"{original_projection} {original_indicator_type}"
+                    else:
+                        # We found a Standard card, use the last line we saw
+                        selected_line = all_seen_lines[-1]
+                    
+                    print(f"  Selected line: {selected_line}")
                     
                     # After finding clean prop, we need to re-find the card in the DOM
                     # The card reference is stale, so we need to get a fresh reference
                     print(f"  Re-finding card in DOM after swap...")
+                    sb.cdp.sleep(1)  # Give DOM time to fully update
                     
                     # We already have the player name, so use it to find the fresh card
                     print(f"  Looking for updated card for: {player_name}")
@@ -308,25 +433,61 @@ def scrape_prop_type(sb, stat_name):
                     fresh_cards = sb.cdp.select_all('ul[aria-label="Projections List"] li')
                     fresh_card = None
                     
+                    # First try exact name match
                     for fresh_c in fresh_cards:
                         name_check = fresh_c.query_selector('h3[id="test-player-name"]')
                         if name_check and name_check.text.strip() == player_name:
-                            # Check if this fresh card has no indicators
-                            goblin_check = fresh_c.query_selector('img[alt="Goblin"]')
-                            demon_check = fresh_c.query_selector('img[alt="Demon"]')
-                            if not goblin_check and not demon_check:
-                                fresh_card = fresh_c
-                                print(f"  Found fresh card without indicators for: {player_name}")
-                                break
+                            # Accept the card regardless of indicators - we just need the updated projection
+                            fresh_card = fresh_c
+                            print(f"  Found fresh card for: {player_name}")
+                            break
+                    
+                    # If exact match fails, try partial name match as fallback
+                    if not fresh_card:
+                        print(f"  Exact name match failed, trying partial match for: {player_name}")
+                        for fresh_c in fresh_cards:
+                            name_check = fresh_c.query_selector('h3[id="test-player-name"]')
+                            if name_check:
+                                name_text = name_check.text.strip()
+                                # Check if the name contains the key parts (first and last name)
+                                name_parts = player_name.split()
+                                if len(name_parts) >= 2:
+                                    first_name = name_parts[0]
+                                    last_name = name_parts[-1]
+                                    if first_name in name_text and last_name in name_text:
+                                        fresh_card = fresh_c
+                                        print(f"  Found fresh card via partial match: {name_text}")
+                                        break
                     
                     if fresh_card:
                         card = fresh_card  # Update our reference to the fresh card
+                        
+                        # Determine final payout type based on the fresh card
+                        if found_standard_card:
+                            # We found a Standard card, use it
+                            final_goblin = fresh_card.query_selector('img[alt="Goblin"]')
+                            final_demon = fresh_card.query_selector('img[alt="Demon"]')
+                            
+                            if final_goblin:
+                                payout_type = "Goblin"
+                            elif final_demon:
+                                payout_type = "Demon"
+                            else:
+                                payout_type = "Standard"
+                        else:
+                            # We didn't find a Standard card, use the original card type
+                            payout_type = original_indicator_type
+                            
+                        print(f"  Final card type: {payout_type}")
                     else:
                         print(f"  Could not find fresh card for: {player_name}, skipping")
                         continue
                 else:
                     print(f"  No swap button found, storing {indicator_type} indicator")
                     payout_type = indicator_type
+            else:
+                # No indicators found, this is a Standard card
+                payout_type = "Standard"
             
             # Extract player name
             name_elem = card.query_selector('h3[id="test-player-name"]')
@@ -380,6 +541,11 @@ def scrape_prop_type(sb, stat_name):
                 # Combine into the format you want
                 projection_text = f"{name} ({team} - {position}) vs {opponent} at {game_time} - {value} {stat_type}"
                 
+                # Add payout type to the display text if it's not Standard
+                display_text = projection_text
+                if payout_type != "Standard":
+                    display_text += f" ({payout_type})"
+                
                 player_projections.append({
                     'name': name,
                     'team': team,
@@ -392,11 +558,15 @@ def scrape_prop_type(sb, stat_name):
                     'full_text': projection_text
                 })
                 
-                print(f"Scraped: {projection_text}")
+                print(f"Scraped: {display_text}")
                 
         except Exception as e:
-            print(f"Error scraping player card: {e}")
+            cprint(f"Error scraping player card: {e}", "red")
             continue
+    
+    # Print summary of live betting players skipped
+    if SKIP_LIVE_BETTING and live_betting_skipped > 0:
+        cprint(f"\n🚫 Skipped {live_betting_skipped} live betting player(s) - Games have started", "red")
     
     return player_projections
 
@@ -426,16 +596,16 @@ def display_menu():
     """Display CLI menu for stat type selection"""
     stat_types = get_all_stat_types()
     
-    print("\n" + "="*50)
-    print("PRIZEPICKS SCRAPER - STAT TYPE SELECTION")
-    print("="*50)
-    print("Select which prop type you want to scrape:")
+    cprint("\n" + "="*50, "cyan")
+    cprint("PRIZEPICKS SCRAPER - STAT TYPE SELECTION", "yellow", attrs=["bold"])
+    cprint("="*50, "cyan")
+    cprint("Select which prop type you want to scrape:", "white")
     print()
     
     for i, stat_type in enumerate(stat_types, 1):
-        print(f"{i:2d}) {stat_type}")
+        cprint(f"{i:2d}) {stat_type}", "white")
     
-    print(f"{len(stat_types) + 1:2d}) All Stats")
+    cprint(f"{len(stat_types) + 1:2d}) All Stats", "green")
     print()
     
     return stat_types
@@ -449,7 +619,7 @@ def get_user_selection():
             choice = input("Enter your choice (1-{}): ".format(len(stat_types) + 1)).strip()
             
             if not choice:
-                print("Please enter a valid choice.")
+                cprint("Please enter a valid choice.", "red")
                 continue
                 
             choice_num = int(choice)
@@ -459,12 +629,12 @@ def get_user_selection():
             elif 1 <= choice_num <= len(stat_types):
                 return [stat_types[choice_num - 1]]  # Single stat type
             else:
-                print(f"Please enter a number between 1 and {len(stat_types) + 1}")
+                cprint(f"Please enter a number between 1 and {len(stat_types) + 1}", "red")
                 
         except ValueError:
-            print("Please enter a valid number.")
+            cprint("Please enter a valid number.", "red")
         except KeyboardInterrupt:
-            print("\nExiting...")
+            cprint("\nExiting...", "yellow")
             exit(0)
 
 def ask_continue():
@@ -478,21 +648,22 @@ def ask_continue():
             elif response in ['n', 'no']:
                 return False
             else:
-                print("Please enter 'y' for yes or 'n' for no.")
+                cprint("Please enter 'y' for yes or 'n' for no.", "red")
                 
         except KeyboardInterrupt:
-            print("\nExiting...")
+            cprint("\nExiting...", "yellow")
             exit(0)
 
 # Configuration
 SPREADSHEET_ID = "1H9HcjtjoG9AlRJ3lAvgZXpefYfuVcylwqc4D4B_Ai1g"  # Replace with your actual spreadsheet ID
+SKIP_LIVE_BETTING = True  # Set to False if you want to track live betting lines
 
 def initialize_browser_session(sb):
     """Initialize the browser session with PrizePicks setup"""
     # Setup Google Sheets
     sheets_service = setup_google_sheets()
     if not sheets_service:
-        print("Google Sheets setup failed. Continuing with console output only.")
+        cprint("Google Sheets setup failed. Continuing with console output only.", "yellow")
     
     url = "https://app.prizepicks.com/"
     sb.activate_cdp_mode(url)
@@ -501,58 +672,58 @@ def initialize_browser_session(sb):
     try:
         sb.cdp.click('button#ketch-banner-button-primary')
         sb.cdp.sleep(1)
-        print("Accept All button clicked successfully!")
+        cprint("Accept All button clicked successfully!", "green")
     except Exception:
-        print("No Accept All button found or already handled.")
+        cprint("No Accept All button found or already handled.", "cyan")
     
     # Click "Got it" button if it appears (welcome modal)
     try:
         sb.cdp.click('button[title="Got it"]')
         sb.cdp.sleep(1)
-        print("Got it button clicked successfully!")
+        cprint("Got it button clicked successfully!", "green")
     except Exception:
-        print("No Got it button found or already handled.")
+        cprint("No Got it button found or already handled.", "cyan")
     
     # Using exact coordinates for location clicks
-    print("Using exact coordinates for location clicks...")
+    cprint("Using exact coordinates for location clicks...", "cyan")
     
     # Click the location icon at the top of the browser using pyautogui
     try:
         # First click: Location icon at (947, 91)
-        print("Clicking first location at coordinates (947, 91)...")
+        cprint("Clicking first location at coordinates (947, 91)...", "cyan")
         pyautogui.click(947, 91)
         sb.cdp.sleep(2)
-        print("First location clicked successfully!")
+        cprint("First location clicked successfully!", "green")
         
         # Second click: Next location at (872, 219)
-        print("Clicking second location at coordinates (872, 219)...")
+        cprint("Clicking second location at coordinates (872, 219)...", "cyan")
         pyautogui.click(872, 219)
         sb.cdp.sleep(2)
-        print("Second location clicked successfully!")
+        cprint("Second location clicked successfully!", "green")
         
         # Refresh the page after location clicks
-        print("Refreshing the page...")
+        cprint("Refreshing the page...", "cyan")
         sb.refresh()
         sb.cdp.sleep(3)  # Wait for page to reload
-        print("Page refreshed successfully!")
+        cprint("Page refreshed successfully!", "green")
         
     except Exception as e:
-        print(f"Error clicking locations: {e}")
+        cprint(f"Error clicking locations: {e}", "red")
     
     # Close the welcome modal if it appears
     try:
         sb.cdp.click('button.close')
         sb.cdp.sleep(1)
-        print("Welcome modal closed successfully!")
+        cprint("Welcome modal closed successfully!", "green")
     except Exception:
-        print("No welcome modal found or already closed.")
+        cprint("No welcome modal found or already closed.", "cyan")
     
     # Click on the NFL tab - using XPath for exact text matching
     sb.cdp.click('//button[contains(@class, "league")]//span[text()="NFL" and not(contains(text(), "NFLSZN"))]')
     sb.cdp.sleep(2)
     
-    print("NFL tab clicked successfully!")
-    print("Browser session ready!")
+    cprint("NFL tab clicked successfully!", "green")
+    cprint("Browser session ready!", "green", attrs=["bold"])
     
     return sheets_service
 
@@ -562,7 +733,7 @@ def scrape_selected_stats(sb, sheets_service, selected_stat_types):
     stat_types = selected_stat_types
     
     if not stat_types:
-        print("No stat types selected. Falling back to Pass Yards only.")
+        cprint("No stat types selected. Falling back to Pass Yards only.", "yellow")
         stat_types = ["Pass Yards"]
     
     # Scrape all prop types
@@ -572,35 +743,35 @@ def scrape_selected_stats(sb, sheets_service, selected_stat_types):
         try:
             projections = scrape_prop_type(sb, stat_type)
             all_projections[stat_type] = projections
-            print(f"Completed scraping {stat_type}: {len(projections)} players found")
+            cprint(f"Completed scraping {stat_type}: {len(projections)} players found", "green")
             
             # Update Google Sheets if service is available
             if sheets_service and SPREADSHEET_ID != "YOUR_SPREADSHEET_ID_HERE":
                 sheet_name = stat_type.replace("+", " Plus ")  # Handle special characters for sheet names
                 success = create_or_update_sheet(sheets_service, SPREADSHEET_ID, sheet_name, projections)
                 if success:
-                    print(f"✓ Data uploaded to Google Sheets: {sheet_name}")
+                    cprint(f"✓ Data uploaded to Google Sheets: {sheet_name}", "green")
                 else:
-                    print(f"✗ Failed to upload data to Google Sheets: {sheet_name}")
+                    cprint(f"✗ Failed to upload data to Google Sheets: {sheet_name}", "red")
             else:
-                print("Skipping Google Sheets upload (service not available or ID not configured)")
+                cprint("Skipping Google Sheets upload (service not available or ID not configured)", "yellow")
             
             # Small delay between stat types to avoid overwhelming the page
             sb.cdp.sleep(1)
             
         except Exception as e:
-            print(f"Error scraping {stat_type}: {e}")
+            cprint(f"Error scraping {stat_type}: {e}", "red")
             all_projections[stat_type] = []
     
     # Display comprehensive results
-    print(f"\n{'='*60}")
-    print("COMPREHENSIVE SCRAPING RESULTS")
-    print(f"{'='*60}")
+    cprint(f"\n{'='*60}", "cyan")
+    cprint("COMPREHENSIVE SCRAPING RESULTS", "yellow", attrs=["bold"])
+    cprint(f"{'='*60}", "cyan")
     
     total_players = 0
     for stat_type, projections in all_projections.items():
-        print(f"\n{stat_type.upper()} ({len(projections)} players):")
-        print("-" * 40)
+        cprint(f"\n{stat_type.upper()} ({len(projections)} players):", "green", attrs=["bold"])
+        cprint("-" * 40, "cyan")
         
         if projections:
             for player in projections:
@@ -610,30 +781,30 @@ def scrape_selected_stats(sb, sheets_service, selected_stat_types):
                 elif player.get('payout_type') == "Demon":
                     payout_status = " [DEMON]"
                 
-                print(f"• {player['name']} ({player['team']} - {player['position']}) vs {player['opponent']} at {player['game_time']}{payout_status}")
-                print(f"  Projection: {player['value']} {player['stat_type']}")
+                cprint(f"• {player['name']} ({player['team']} - {player['position']}) vs {player['opponent']} at {player['game_time']}{payout_status}", "white")
+                cprint(f"  Projection: {player['value']} {player['stat_type']}", "cyan")
                 print()
         else:
-            print("No players found for this stat type.")
+            cprint("No players found for this stat type.", "yellow")
         
         total_players += len(projections)
     
-    print(f"\n{'='*60}")
-    print(f"TOTAL PLAYERS SCRAPED ACROSS ALL STAT TYPES: {total_players}")
-    print(f"{'='*60}")
+    cprint(f"\n{'='*60}", "cyan")
+    cprint(f"TOTAL PLAYERS SCRAPED ACROSS ALL STAT TYPES: {total_players}", "green", attrs=["bold"])
+    cprint(f"{'='*60}", "cyan")
     
     if sheets_service and SPREADSHEET_ID != "YOUR_SPREADSHEET_ID_HERE":
-        print(f"\n✓ Data has been uploaded to Google Sheets!")
-        print(f"  Spreadsheet ID: {SPREADSHEET_ID}")
-        print(f"  Worksheets created/updated: {len(stat_types)}")
+        cprint(f"\n✓ Data has been uploaded to Google Sheets!", "green", attrs=["bold"])
+        cprint(f"  Spreadsheet ID: {SPREADSHEET_ID}", "cyan")
+        cprint(f"  Worksheets created/updated: {len(stat_types)}", "cyan")
     else:
-        print(f"\n⚠ Google Sheets integration not configured")
-        print(f"  To enable, update SPREADSHEET_ID and ensure service-account-key.json is present")
+        cprint(f"\n⚠ Google Sheets integration not configured", "yellow")
+        cprint(f"  To enable, update SPREADSHEET_ID and ensure service-account-key.json is present", "yellow")
 
 def run_scraping_session(selected_stat_types):
     """Run a single scraping session with the selected stat types"""
-    print(f"\nSelected stat type(s): {', '.join(selected_stat_types)}")
-    print("Starting browser session...")
+    cprint(f"\nSelected stat type(s): {', '.join(selected_stat_types)}", "green", attrs=["bold"])
+    cprint("Starting browser session...", "cyan")
     
     with SB(uc=True, test=True, locale="en", ad_block=True) as sb:
         # Initialize the browser session
@@ -644,29 +815,36 @@ def run_scraping_session(selected_stat_types):
         
         sb.cdp.sleep(2.5)
 
+# Monitoring session moved to monitor.py
+
 # Main execution loop
 def main():
     """Main execution function with continuous scraping loop"""
-    print("Welcome to PrizePicks Scraper!")
-    print("This tool will help you scrape player projections from PrizePicks.")
+    cprint("Welcome to PrizePicks Scraper!", "green", attrs=["bold"])
+    cprint("This tool will help you scrape player projections from PrizePicks.", "cyan")
+    
+    if SKIP_LIVE_BETTING:
+        cprint("🚫 Live betting filtering is ENABLED - Players with 'Starting' indicators will be skipped", "yellow")
+    else:
+        cprint("⚠️  Live betting filtering is DISABLED - All players will be tracked including live betting", "red")
     
     try:
         while True:
             # Get user selection
             selected_stat_types = get_user_selection()
             
-            # Run scraping session
+            # Run regular scraping session
             run_scraping_session(selected_stat_types)
             
             # Ask if user wants to continue
             if not ask_continue():
-                print("\nThank you for using PrizePicks Scraper!")
+                cprint("\nThank you for using PrizePicks Scraper!", "green", attrs=["bold"])
                 break
                 
     except KeyboardInterrupt:
-        print("\n\nExiting...")
+        cprint("\n\nExiting...", "yellow")
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        cprint(f"\nAn error occurred: {e}", "red")
 
 # Run the main function
 if __name__ == "__main__":
