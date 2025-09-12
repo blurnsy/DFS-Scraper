@@ -10,6 +10,10 @@ from datetime import datetime, timedelta
 import re
 from termcolor import cprint
 import monitor
+from stat_mapping import get_standardized_sheet_name
+from rate_limited_sheets import create_rate_limited_sheets_service
+import nfl_data_py as nfl
+import pandas as pd
 
 def show_mouse_coordinates():
     """Display mouse coordinates in real-time - redirects to utils"""
@@ -18,25 +22,265 @@ def show_mouse_coordinates():
     from mouse_coordinates import display_mouse_coordinates
     display_mouse_coordinates()
 
+# Cache for NFL game times to avoid repeated API calls
+_nfl_game_times_cache = None
+_nfl_cache_date = None
+
+def get_nfl_game_times():
+    """Get actual NFL game times from nfl_data_py for today's games (cached)"""
+    global _nfl_game_times_cache, _nfl_cache_date
+    
+    try:
+        current_date = datetime.now().date()
+        
+        # Return cached data if it's from today
+        if _nfl_game_times_cache and _nfl_cache_date == current_date:
+            return _nfl_game_times_cache
+        
+        current_year = datetime.now().year
+        
+        # Get NFL schedule data
+        schedule_data = nfl.import_schedules([current_year])
+        
+        if schedule_data.empty:
+            cprint("No NFL schedule data found", "red")
+            return {}
+        
+        # Filter for today's games
+        schedule_data['game_date'] = pd.to_datetime(schedule_data['gameday']).dt.date
+        today_games = schedule_data[schedule_data['game_date'] == current_date]
+        
+        if today_games.empty:
+            cprint("No NFL games scheduled for today", "yellow")
+            _nfl_game_times_cache = {}
+            _nfl_cache_date = current_date
+            return {}
+        
+        # Create a mapping of team combinations to game times
+        game_times = {}
+        
+        for _, game in today_games.iterrows():
+            home_team = game['home_team']
+            away_team = game['away_team']
+            game_time = game['gametime']
+            
+            # Create keys for both team combinations
+            game_times[f"{away_team}|{home_team}"] = game_time
+            game_times[f"{home_team}|{away_team}"] = game_time
+            
+            cprint(f"Found game: {away_team} @ {home_team} at {game_time}", "green")
+        
+        # Cache the results
+        _nfl_game_times_cache = game_times
+        _nfl_cache_date = current_date
+        
+        return game_times
+        
+    except Exception as e:
+        cprint(f"Error fetching NFL game times: {e}", "red")
+        return {}
+
+def get_actual_game_time(team, opponent, countdown_timer=""):
+    """Get the actual game time for a team matchup, using NFL data as fallback"""
+    try:
+        # First try to get from NFL data
+        nfl_times = get_nfl_game_times()
+        
+        # Try different team combinations
+        possible_keys = [
+            f"{team}|{opponent}",
+            f"{opponent}|{team}",
+            f"{team.upper()}|{opponent.upper()}",
+            f"{opponent.upper()}|{team.upper()}"
+        ]
+        
+        for key in possible_keys:
+            if key in nfl_times:
+                actual_time = nfl_times[key]
+                cprint(f"Found actual game time for {team} vs {opponent}: {actual_time}", "green")
+                return actual_time
+        
+        # If no NFL data found, try to calculate from countdown timer
+        if countdown_timer and any(char.isdigit() for char in countdown_timer):
+            try:
+                # Parse countdown timer (e.g., "15m 48s", "1h 23m", "45m")
+                current_time = datetime.now()
+                
+                if 'h' in countdown_timer and 'm' in countdown_timer:
+                    # Format: "1h 23m"
+                    parts = countdown_timer.replace('h', '').replace('m', '').split()
+                    hours = int(parts[0])
+                    minutes = int(parts[1])
+                    total_minutes = hours * 60 + minutes
+                elif 'm' in countdown_timer and 's' in countdown_timer:
+                    # Format: "15m 48s"
+                    parts = countdown_timer.replace('m', '').replace('s', '').split()
+                    minutes = int(parts[0])
+                    seconds = int(parts[1])
+                    total_minutes = minutes + (seconds / 60)
+                elif countdown_timer.count('m') == 1:
+                    # Format: "45m"
+                    minutes = int(countdown_timer.replace('m', ''))
+                    total_minutes = minutes
+                else:
+                    # Unknown format, return countdown as-is
+                    return countdown_timer
+                
+                # Calculate actual game time
+                game_time = current_time + timedelta(minutes=total_minutes)
+                formatted_time = game_time.strftime("%a %I:%M%p")
+                
+                cprint(f"Calculated game time from countdown {countdown_timer}: {formatted_time}", "cyan")
+                return formatted_time
+                
+            except Exception as e:
+                cprint(f"Error calculating game time from countdown: {e}", "red")
+                return countdown_timer
+        
+        # Fallback: return countdown timer or unknown
+        return countdown_timer if countdown_timer else "Unknown"
+        
+    except Exception as e:
+        cprint(f"Error getting actual game time: {e}", "red")
+        return countdown_timer if countdown_timer else "Unknown"
+
 # Game time parsing moved to monitor.py
 
 # Game time reading moved to monitor.py
 
 # Upcoming games detection moved to monitor.py
 
+def run_monitoring_scraping(games_info, sheets_service=None):
+    """Run scraping session triggered by monitoring system - no user interaction"""
+    cprint(f"🚀 Opening browser for MONITORING SCRAPING...", "green", attrs=["bold"])
+    
+    try:
+        # Handle both single game and multiple games
+        if isinstance(games_info, dict):
+            # Single game (backward compatibility)
+            games_list = [games_info]
+        else:
+            # Multiple games
+            games_list = games_info
+        
+        # Get all stat types for monitoring (comprehensive scraping)
+        stat_types = get_all_stat_types()
+        
+        # Extract all teams and time from all games
+        all_teams = set()
+        all_opponents = set()
+        target_game_time = games_list[0]['game_time_str']  # All games should have the same time
+        
+        for game in games_list:
+            all_teams.add(game['home_team'])
+            all_teams.add(game['away_team'])
+            all_opponents.add(game['home_team'])
+            all_opponents.add(game['away_team'])
+        
+        target_teams = list(all_teams)
+        target_opponents = list(all_opponents)
+        
+        # Display games being scraped
+        if len(games_list) == 1:
+            game = games_list[0]
+            cprint(f"🎯 Monitoring scrape: {game['away_team']} vs {game['home_team']} at {target_game_time}", "yellow")
+        else:
+            cprint(f"🎯 Monitoring scrape: {len(games_list)} games at {target_game_time}", "yellow")
+            for i, game in enumerate(games_list, 1):
+                cprint(f"   {i}. {game['away_team']} vs {game['home_team']}", "cyan")
+        
+        cprint(f"   Scraping all stat types for comprehensive data collection", "cyan")
+        cprint(f"   Teams: {', '.join(sorted(all_teams))}", "cyan")
+        
+        # Check if we're in countdown timer mode (games within 60 minutes)
+        # In this case, we should accept ALL players with countdown timers
+        is_countdown_mode = False
+        try:
+            from monitor import parse_game_time
+            current_time = datetime.now()
+            for game in games_list:
+                game_datetime = parse_game_time(game['game_time_str'])
+                if game_datetime:
+                    time_diff_minutes = (game_datetime - current_time).total_seconds() / 60
+                    if time_diff_minutes <= 60:
+                        is_countdown_mode = True
+                        break
+        except Exception:
+            pass  # If we can't determine, proceed with normal filtering
+        
+        if is_countdown_mode:
+            cprint(f"⏰ COUNTDOWN MODE: Games are within 60 minutes - accepting ALL players with countdown timers", "yellow", attrs=["bold"])
+            # Disable team filtering when in countdown mode
+            target_teams = None
+            target_opponents = None
+            target_game_time = None
+        
+        with SB(uc=True, test=True, locale="en", ad_block=True) as sb:
+            # Initialize the browser session
+            if sheets_service is None:
+                sheets_service = initialize_browser_session(sb)
+            
+            # Run comprehensive scraping for all stat types with time filtering
+            scrape_selected_stats(sb, sheets_service, stat_types, 
+                                target_teams=target_teams, 
+                                target_opponents=target_opponents, 
+                                target_game_time=target_game_time,
+                                stop_on_different_date=True)
+            
+            if len(games_list) == 1:
+                game = games_list[0]
+                cprint(f"✅ Monitoring scrape completed for {game['away_team']} vs {game['home_team']}", "green", attrs=["bold"])
+            else:
+                cprint(f"✅ Monitoring scrape completed for {len(games_list)} games at {target_game_time}", "green", attrs=["bold"])
+            return True
+            
+    except Exception as e:
+        cprint(f"❌ Error during monitoring scrape: {e}", "red")
+        if isinstance(games_info, dict):
+            cprint(f"   Scraping failed for {games_info['away_team']} vs {games_info['home_team']}", "yellow")
+        else:
+            cprint(f"   Scraping failed for {len(games_info)} games", "yellow")
+        return False
+
 def run_final_scraping_for_game(game_info, sheets_service):
-    """Run final scraping session for a specific game"""
-    cprint(f"🚀 Opening browser for FINAL scraping of {game_info['team']} vs {game_info['opponent']}...", "green", attrs=["bold"])
+    """Run final scraping session for a specific game - verification mode"""
+    cprint(f"🚀 Opening browser for FINAL VERIFICATION of {game_info['team']} vs {game_info['opponent']}...", "green", attrs=["bold"])
+    
+    # Extract expected players and stat types from the game info
+    expected_players = {}
+    expected_stat_types = set()
+    
+    if 'players' in game_info:
+        for player in game_info['players']:
+            player_key = f"{player.get('player_name', '')}|{player.get('team', '')}|{player.get('opponent', '')}|{player.get('game_time', '')}"
+            expected_players[player_key] = {
+                'name': player.get('player_name', ''),
+                'team': player.get('team', ''),
+                'opponent': player.get('opponent', ''),
+                'game_time': player.get('game_time', ''),
+                'position': player.get('position', ''),
+                'stat_type': player.get('sheet_name', '')
+            }
+            if player.get('sheet_name'):
+                expected_stat_types.add(player.get('sheet_name'))
+    
+    cprint(f"📊 Expected: {len(expected_players)} players across {len(expected_stat_types)} stat types", "cyan")
+    cprint(f"   Stat types: {', '.join(sorted(expected_stat_types))}", "cyan")
+    cprint(f"🎯 Verifying all expected players are still available with current lines...", "yellow")
     
     with SB(uc=True, test=True, locale="en", ad_block=True) as sb:
-        # Initialize the browser session
+        # Initialize the browser session (but use the passed sheets_service)
         initialize_browser_session(sb)
         
-        # Run full scraping session for all stat types
-        all_stat_types = get_all_stat_types()
-        scrape_selected_stats(sb, sheets_service, all_stat_types)
+        # Run verification scraping for the expected stat types
+        scrape_selected_stats(sb, sheets_service, list(expected_stat_types), 
+                            target_teams=[game_info['team']], 
+                            target_opponents=[game_info['opponent']], 
+                            target_game_time=game_info['game_time_str'],
+                            stop_on_different_date=False,  # Don't stop on different dates in verification mode
+                            expected_players=expected_players)
         
-        cprint(f"✅ Final scraping completed for {game_info['team']} vs {game_info['opponent']}", "green", attrs=["bold"])
+        cprint(f"✅ Final verification completed for {game_info['team']} vs {game_info['opponent']}", "green", attrs=["bold"])
         cprint(f"   This was the last scrape before the game starts!", "yellow")
 
 # Next game info moved to monitor.py
@@ -44,18 +288,15 @@ def run_final_scraping_for_game(game_info, sheets_service):
 # Game monitoring moved to monitor.py
 
 def setup_google_sheets():
-    """Setup Google Sheets API connection"""
+    """Setup Google Sheets API connection with rate limiting"""
     try:
-        # You'll need to create a service account and download the JSON key file
-        # Place it in your project directory and update the path below
-        SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-        SERVICE_ACCOUNT_FILE = 'service-account-key.json'
-        
-        credentials = service_account.Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-        
-        service = build('sheets', 'v4', credentials=credentials)
-        return service
+        service = create_rate_limited_sheets_service()
+        if service and service.service:
+            cprint("✓ Google Sheets service initialized with rate limiting", "green")
+            return service
+        else:
+            cprint("✗ Failed to initialize Google Sheets service", "red")
+            return None
     except Exception as e:
         cprint(f"Error setting up Google Sheets: {e}", "red")
         cprint("Please ensure you have a service account key file named 'service-account-key.json'", "yellow")
@@ -64,14 +305,9 @@ def setup_google_sheets():
 def read_existing_sheet_data(service, spreadsheet_id, sheet_name):
     """Read existing data from the sheet to preserve Actual and Over/Under columns"""
     try:
-        # Read all data from the sheet
+        # Read all data from the sheet using rate-limited service
         range_name = f"'{sheet_name}'!A:I"
-        result = service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id,
-            range=range_name
-        ).execute()
-        
-        values = result.get('values', [])
+        values = service.get_values(spreadsheet_id, range_name)
         if not values:
             return {}
         
@@ -113,12 +349,17 @@ def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
         # Check if sheet exists, if not create it
         sheet_exists = True
         try:
-            # Try to get the sheet
-            sheet_metadata = service.spreadsheets().get(
-                spreadsheetId=spreadsheet_id,
-                ranges=f"'{sheet_name}'!A1"
-            ).execute()
+            # Try to get the sheet using rate-limited service
+            sheet_metadata = service.get_spreadsheet(spreadsheet_id)
+            if sheet_metadata:
+                # Check if sheet exists by looking for it in the sheets list
+                sheet_names = [sheet['properties']['title'] for sheet in sheet_metadata.get('sheets', [])]
+                if sheet_name not in sheet_names:
+                    sheet_exists = False
         except:
+            sheet_exists = False
+        
+        if not sheet_exists:
             # Sheet doesn't exist, create it
             cprint(f"Creating new worksheet: {sheet_name}", "green", attrs=["bold"])
             request = {
@@ -129,11 +370,10 @@ def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
                 }
             }
             
-            service.spreadsheets().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body={'requests': [request]}
-            ).execute()
-            sheet_exists = False
+            success = service.batch_update(spreadsheet_id, [request])
+            if not success:
+                cprint(f"Failed to create sheet {sheet_name}", "red")
+                return False
         
         # Read existing data if sheet exists
         existing_data = {}
@@ -182,17 +422,31 @@ def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
                 ]
                 new_rows.append(row)
         
-        # Perform updates
+        # Perform updates using rate-limited service
         if rows_to_update:
-            # Update existing rows with changed lines
-            body = {
-                'valueInputOption': 'RAW',
-                'data': rows_to_update
-            }
-            service.spreadsheets().values().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body=body
-            ).execute()
+            # Convert to batch update format
+            batch_requests = []
+            for update in rows_to_update:
+                batch_requests.append({
+                    'updateCells': {
+                        'range': {
+                            'sheetId': 0,  # We'll need to get the actual sheet ID
+                            'startRowIndex': int(update['range'].split('F')[1]) - 1,
+                            'endRowIndex': int(update['range'].split('F')[1]),
+                            'startColumnIndex': 5,  # Column F (0-indexed)
+                            'endColumnIndex': 6
+                        },
+                        'rows': [{'values': [{'userEnteredValue': {'stringValue': update['values'][0][0]}}]}]
+                    }
+                })
+            
+            # For now, let's use individual updates to avoid complexity
+            for update in rows_to_update:
+                success = service.update_values(spreadsheet_id, update['range'], update['values'])
+                if not success:
+                    cprint(f"  ✗ Failed to update row {update['range']}", "red")
+                    continue
+            
             cprint(f"  Updated {updated_count} existing players with new line values", "green")
         
         if new_rows:
@@ -207,12 +461,10 @@ def create_or_update_sheet(service, spreadsheet_id, sheet_name, data):
                 range_name = f"'{sheet_name}'!A:I"
                 body = {'values': new_rows}
             
-            service.spreadsheets().values().append(
-                spreadsheetId=spreadsheet_id,
-                range=range_name,
-                valueInputOption='RAW',
-                body=body
-            ).execute()
+            success = service.append_values(spreadsheet_id, range_name, new_rows)
+            if not success:
+                cprint(f"  ✗ Failed to append new players", "red")
+                return False
             cprint(f"  Added {len(new_rows)} new players", "green")
         
         cprint(f"Smart update completed for {sheet_name}:", "green", attrs=["bold"])
@@ -264,9 +516,21 @@ def is_live_betting_player(card):
         # If there's an error checking, assume it's not live betting
         return False
 
-def scrape_prop_type(sb, stat_name):
-    """Scrape player projections for a specific prop type"""
+def scrape_prop_type(sb, stat_name, target_teams=None, target_opponents=None, target_game_time=None, stop_on_different_date=True, expected_players=None):
+    """Scrape player projections for a specific prop type, optionally filtered by game or date"""
     cprint(f"\n=== Scraping {stat_name} ===", "cyan", attrs=["bold"])
+    
+    # If filtering by game, show what we're looking for
+    if target_teams and target_opponents and target_game_time:
+        cprint(f"🎯 Filtering for game: {', '.join(target_teams)} vs {', '.join(target_opponents)} at {target_game_time}", "yellow")
+        cprint(f"   This will significantly speed up scraping by only getting players from this specific game!", "cyan")
+    elif stop_on_different_date:
+        cprint(f"📅 Will stop scraping when encountering games on different dates (optimized for today's games)", "yellow")
+    
+    # If we have expected players, show verification mode
+    if expected_players:
+        expected_count = len([p for p in expected_players.values() if p.get('stat_type') == stat_name])
+        cprint(f"🔍 Verification mode: Looking for {expected_count} expected players in {stat_name}", "cyan")
     
     # Click on the specific stat button
     try:
@@ -290,6 +554,8 @@ def scrape_prop_type(sb, stat_name):
     cprint("Scraping player projections...", "cyan")
     player_projections = []
     live_betting_skipped = 0
+    game_filtered_skipped = 0
+    different_date_skipped = 0
     
     # Get all player cards from the projections list
     player_cards = sb.cdp.select_all('ul[aria-label="Projections List"] li')
@@ -524,12 +790,14 @@ def scrape_prop_type(sb, stat_name):
                 # Extract opponent and game time
                 opponent = ""
                 game_time = ""
+                countdown_timer = ""  # Store countdown separately for filtering logic
+                
+                # First, try to get the actual game time from the time element
                 if time_elem:
-                    # Get all span elements within the time element
                     spans = time_elem.query_selector_all('span')
                     if len(spans) >= 2:
                         opponent = spans[0].text.strip()  # First span contains opponent (e.g., "PHI")
-                        game_time = spans[1].text.strip()  # Second span contains time (e.g., "Thu 7:20pm")
+                        game_time = spans[1].text.strip()  # Second span contains actual game time (e.g., "Thu 7:20pm")
                     elif len(spans) == 1:
                         # Fallback: if only one span, it might contain both or just time
                         time_text = spans[0].text.strip()
@@ -537,6 +805,132 @@ def scrape_prop_type(sb, stat_name):
                             game_time = time_text
                         else:
                             opponent = time_text
+                
+                # Check for countdown timer in spottie div structure (for filtering logic only)
+                # Use flexible selectors to handle dynamic class names (css-6jumpa might be dynamic)
+                countdown_div = card.query_selector('div[class*="inline"][class*="css-"]')
+                if countdown_div:
+                    # Look for the spottie span within the countdown div
+                    spottie_span = countdown_div.query_selector('span[class*="text-spottie"]')
+                    if spottie_span:
+                        countdown_timer = spottie_span.text.strip()
+                        
+                        # Check if this is a countdown timer
+                        is_countdown = (
+                            ('m' in countdown_timer and 's' in countdown_timer and any(char.isdigit() for char in countdown_timer)) or
+                            (any(char.isdigit() for char in countdown_timer) and ('m' in countdown_timer or ':' in countdown_timer)) or
+                            (len(countdown_timer) <= 10 and any(char.isdigit() for char in countdown_timer))  # Short time format
+                        )
+                        
+                        if is_countdown:
+                            # This is a countdown timer - use it for filtering logic but get actual game time
+                            cprint(f"⏰ Countdown detected: {countdown_timer} - Looking up actual game time", "cyan")
+                            
+                            # If we don't have opponent from time_elem, try to extract it
+                            if not opponent and time_elem:
+                                time_spans = time_elem.query_selector_all('span')
+                                if len(time_spans) >= 2:
+                                    opponent = time_spans[0].text.strip()
+                                elif len(time_spans) == 1:
+                                    time_text = time_spans[0].text.strip()
+                                    if " vs " in time_text:
+                                        opponent = time_text.split(" vs ")[1].strip()
+                                    else:
+                                        opponent = time_text
+                            
+                            # Get actual game time using NFL data or countdown calculation
+                            if team and opponent:
+                                actual_game_time = get_actual_game_time(team, opponent, countdown_timer)
+                                if actual_game_time and actual_game_time != "Unknown":
+                                    game_time = actual_game_time
+                                    cprint(f"✅ Using actual game time: {game_time}", "green")
+                        else:
+                            # Found countdown div but text doesn't look like countdown
+                            countdown_timer = "COUNTDOWN_DETECTED"
+                            if not opponent and time_elem:
+                                time_spans = time_elem.query_selector_all('span')
+                                if len(time_spans) >= 2:
+                                    opponent = time_spans[0].text.strip()
+                                elif len(time_spans) == 1:
+                                    time_text = time_spans[0].text.strip()
+                                    if " vs " in time_text:
+                                        opponent = time_text.split(" vs ")[1].strip()
+                                    else:
+                                        opponent = time_text
+                    else:
+                        # Found countdown div but no spottie span
+                        countdown_timer = "COUNTDOWN_DETECTED"
+                        if not opponent and time_elem:
+                            time_spans = time_elem.query_selector_all('span')
+                            if len(time_spans) >= 2:
+                                opponent = time_spans[0].text.strip()
+                            elif len(time_spans) == 1:
+                                time_text = time_spans[0].text.strip()
+                                if " vs " in time_text:
+                                    opponent = time_text.split(" vs ")[1].strip()
+                                else:
+                                    opponent = time_text
+                
+                # Check if we should stop scraping due to different date
+                if stop_on_different_date and game_time and not is_game_today(game_time):
+                    different_date_skipped += 1
+                    cprint(f"📅 Stopping {stat_name} scraping - encountered game on different date: {game_time}", "yellow")
+                    cprint(f"   This optimizes scraping by focusing on today's games only!", "cyan")
+                    break  # Stop processing this stat type
+                
+                # Apply game filtering if specified
+                if target_teams and target_opponents and target_game_time:
+                    # Check if this player is from the target game
+                    all_target_teams = set(target_teams + target_opponents)
+                    
+                    # Check if the player's team is in the target teams
+                    is_target_team = team in all_target_teams
+                    
+                    # Handle time matching - use countdown timer for filtering if available
+                    is_target_time = False
+                    time_for_filtering = countdown_timer if countdown_timer else game_time
+                    
+                    if target_game_time and time_for_filtering:
+                        # Handle countdown timers (e.g., "54m 32s", "1h 23m", "45m") - these are always today's games
+                        is_countdown = (
+                            ('m' in time_for_filtering and 's' in time_for_filtering and any(char.isdigit() for char in time_for_filtering)) or  # "54m 32s"
+                            ('h' in time_for_filtering and 'm' in time_for_filtering and any(char.isdigit() for char in time_for_filtering)) or  # "1h 23m"
+                            (time_for_filtering.count('m') == 1 and any(char.isdigit() for char in time_for_filtering) and len(time_for_filtering) <= 10)  # "45m"
+                        )
+                        
+                        if is_countdown:
+                            # This is a countdown timer, which means it's a today's game
+                            # When we see countdown timers, accept ALL players regardless of team
+                            # because the countdown indicates games are about to start
+                            is_target_time = True
+                            cprint(f"⏰ Found countdown timer: {time_for_filtering} - Accepting all players from today's games", "cyan")
+                        else:
+                            # Normalize times for comparison (remove extra spaces, case insensitive)
+                            target_time_norm = target_game_time.strip().lower()
+                            game_time_norm = time_for_filtering.strip().lower()
+                            
+                            # Check if one contains the other or they're very similar
+                            is_target_time = (target_time_norm in game_time_norm or 
+                                            game_time_norm in target_time_norm or
+                                            target_time_norm == game_time_norm)
+                    
+                    # For countdown timers, accept all players (team filtering is less important)
+                    # For regular times, require both team and time match
+                    is_countdown = (
+                        ('m' in time_for_filtering and 's' in time_for_filtering and any(char.isdigit() for char in time_for_filtering)) or  # "54m 32s"
+                        ('h' in time_for_filtering and 'm' in time_for_filtering and any(char.isdigit() for char in time_for_filtering)) or  # "1h 23m"
+                        (time_for_filtering.count('m') == 1 and any(char.isdigit() for char in time_for_filtering) and len(time_for_filtering) <= 10)  # "45m"
+                    )
+                    
+                    if is_countdown:
+                        # Countdown timer - accept all players
+                        pass  # Don't skip any players with countdown timers
+                    else:
+                        # Regular time format - require team and time match
+                        if not (is_target_team and is_target_time):
+                            game_filtered_skipped += 1
+                            cprint(f"🚫 Skipping {name} - Not from target game ({team} vs {opponent} at {game_time})", "yellow")
+                            continue
                 
                 # Combine into the format you want
                 projection_text = f"{name} ({team} - {position}) vs {opponent} at {game_time} - {value} {stat_type}"
@@ -564,9 +958,15 @@ def scrape_prop_type(sb, stat_name):
             cprint(f"Error scraping player card: {e}", "red")
             continue
     
-    # Print summary of live betting players skipped
+    # Print summary of skipped players
     if SKIP_LIVE_BETTING and live_betting_skipped > 0:
         cprint(f"\n🚫 Skipped {live_betting_skipped} live betting player(s) - Games have started", "red")
+    
+    if target_teams and target_opponents and target_game_time and game_filtered_skipped > 0:
+        cprint(f"🎯 Skipped {game_filtered_skipped} player(s) - Not from target game", "yellow")
+    
+    if stop_on_different_date and different_date_skipped > 0:
+        cprint(f"📅 Stopped scraping after {different_date_skipped} player(s) - Different date games encountered", "cyan")
     
     return player_projections
 
@@ -580,6 +980,7 @@ def get_all_stat_types():
         "FG Made",
         "Receptions",
         "Rush+Rec Yds",
+        "Rush+Rec TDs",
         "Fantasy Score",
         "Pass Attempts",
         "Rec Targets",
@@ -591,6 +992,62 @@ def get_all_stat_types():
         "Kicking Points",
         "Tackles+Ast"
     ]
+
+def is_game_today(game_time_str):
+    """Check if a game time string represents a game from today"""
+    if not game_time_str:
+        return False
+    
+    try:
+        # Handle countdown timers like "51m 26s", "1h 23m", "45m" - these are always today's games
+        is_countdown = (
+            ('m' in game_time_str and 's' in game_time_str and any(char.isdigit() for char in game_time_str)) or  # "54m 32s"
+            ('h' in game_time_str and 'm' in game_time_str and any(char.isdigit() for char in game_time_str)) or  # "1h 23m"
+            (game_time_str.count('m') == 1 and any(char.isdigit() for char in game_time_str) and len(game_time_str) <= 10)  # "45m"
+        )
+        
+        if is_countdown:
+            # This is a countdown timer, which means the game is today
+            return True
+        
+        # Import the parse_game_time function from monitor.py
+        from monitor import parse_game_time
+        game_datetime = parse_game_time(game_time_str)
+        
+        if not game_datetime:
+            # If we can't parse it, assume it's today to be safe
+            cprint(f"Could not parse game time '{game_time_str}', assuming today", "yellow")
+            return True
+        
+        # Compare dates (not times)
+        today = datetime.now().date()
+        game_date = game_datetime.date()
+        
+        return game_date == today
+    except Exception as e:
+        cprint(f"Error checking if game is today: {e}", "red")
+        # If there's an error, assume it's today to be safe
+        return True
+
+def get_relevant_stat_types_for_game(game_info):
+    """Get stat types that are relevant for a specific game based on existing data"""
+    relevant_stat_types = set()
+    
+    if 'players' in game_info:
+        for player in game_info['players']:
+            if 'sheet_name' in player:
+                relevant_stat_types.add(player['sheet_name'])
+    
+    # If no specific stat types found, use common ones based on game type
+    if not relevant_stat_types:
+        cprint("⚠️  No specific stat types found for this game, using common NFL stat types", "yellow")
+        relevant_stat_types = {
+            "Pass Yards", "Rush Yards", "Receiving Yards", "Pass TDs", 
+            "Receptions", "Rush+Rec Yds", "Fantasy Score", "Pass Attempts",
+            "Rec Targets", "Pass Completions", "Rush Attempts"
+        }
+    
+    return list(relevant_stat_types)
 
 def display_menu():
     """Display CLI menu for stat type selection"""
@@ -727,8 +1184,8 @@ def initialize_browser_session(sb):
     
     return sheets_service
 
-def scrape_selected_stats(sb, sheets_service, selected_stat_types):
-    """Scrape the selected stat types"""
+def scrape_selected_stats(sb, sheets_service, selected_stat_types, target_teams=None, target_opponents=None, target_game_time=None, stop_on_different_date=True, expected_players=None):
+    """Scrape the selected stat types, optionally filtered by game or date, with verification"""
     # Use the stat types selected by the user
     stat_types = selected_stat_types
     
@@ -738,16 +1195,28 @@ def scrape_selected_stats(sb, sheets_service, selected_stat_types):
     
     # Scrape all prop types
     all_projections = {}
+    verification_results = {
+        'found_players': set(),
+        'missing_players': set(),
+        'new_players': set(),
+        'total_expected': len(expected_players) if expected_players else 0
+    }
     
     for stat_type in stat_types:
         try:
-            projections = scrape_prop_type(sb, stat_type)
+            projections = scrape_prop_type(sb, stat_type, target_teams, target_opponents, target_game_time, stop_on_different_date, expected_players)
             all_projections[stat_type] = projections
+            
+            # Track verification results
+            for player in projections:
+                player_key = f"{player.get('name', '')}|{player.get('team', '')}|{player.get('opponent', '')}|{player.get('game_time', '')}"
+                verification_results['found_players'].add(player_key)
+            
             cprint(f"Completed scraping {stat_type}: {len(projections)} players found", "green")
             
             # Update Google Sheets if service is available
             if sheets_service and SPREADSHEET_ID != "YOUR_SPREADSHEET_ID_HERE":
-                sheet_name = stat_type.replace("+", " Plus ")  # Handle special characters for sheet names
+                sheet_name = get_standardized_sheet_name(stat_type)  # Use standardized sheet name
                 success = create_or_update_sheet(sheets_service, SPREADSHEET_ID, sheet_name, projections)
                 if success:
                     cprint(f"✓ Data uploaded to Google Sheets: {sheet_name}", "green")
@@ -763,10 +1232,34 @@ def scrape_selected_stats(sb, sheets_service, selected_stat_types):
             cprint(f"Error scraping {stat_type}: {e}", "red")
             all_projections[stat_type] = []
     
+    # Calculate verification results
+    if expected_players:
+        verification_results['missing_players'] = set(expected_players.keys()) - verification_results['found_players']
+        verification_results['new_players'] = verification_results['found_players'] - set(expected_players.keys())
+    
     # Display comprehensive results
     cprint(f"\n{'='*60}", "cyan")
     cprint("COMPREHENSIVE SCRAPING RESULTS", "yellow", attrs=["bold"])
     cprint(f"{'='*60}", "cyan")
+    
+    # Show verification summary if we have expected players
+    if expected_players:
+        cprint(f"\n🔍 VERIFICATION SUMMARY:", "green", attrs=["bold"])
+        cprint(f"   Expected players: {verification_results['total_expected']}", "cyan")
+        cprint(f"   Found players: {len(verification_results['found_players'])}", "green")
+        cprint(f"   Missing players: {len(verification_results['missing_players'])}", "red" if verification_results['missing_players'] else "green")
+        cprint(f"   New players: {len(verification_results['new_players'])}", "yellow" if verification_results['new_players'] else "green")
+        
+        if verification_results['missing_players']:
+            cprint(f"\n❌ MISSING PLAYERS (not found in current scrape):", "red", attrs=["bold"])
+            for player_key in sorted(verification_results['missing_players']):
+                player_info = expected_players[player_key]
+                cprint(f"   • {player_info['name']} ({player_info['team']} - {player_info['position']}) - {player_info['stat_type']}", "red")
+        
+        if verification_results['new_players']:
+            cprint(f"\n🆕 NEW PLAYERS (not in original data):", "yellow", attrs=["bold"])
+            for player_key in sorted(verification_results['new_players']):
+                cprint(f"   • {player_key}", "yellow")
     
     total_players = 0
     for stat_type, projections in all_projections.items():
@@ -801,25 +1294,75 @@ def scrape_selected_stats(sb, sheets_service, selected_stat_types):
         cprint(f"\n⚠ Google Sheets integration not configured", "yellow")
         cprint(f"  To enable, update SPREADSHEET_ID and ensure service-account-key.json is present", "yellow")
 
-def run_scraping_session(selected_stat_types):
+def run_scraping_session(selected_stat_types, use_time_filtering=True):
     """Run a single scraping session with the selected stat types"""
     cprint(f"\nSelected stat type(s): {', '.join(selected_stat_types)}", "green", attrs=["bold"])
     cprint("Starting browser session...", "cyan")
+    
+    # Get next games for time-based filtering
+    target_teams = None
+    target_opponents = None
+    target_game_time = None
+    
+    if use_time_filtering:
+        try:
+            next_games = monitor.get_next_nfl_games()
+            if next_games:
+                # Extract teams and time from the next games
+                all_teams = set()
+                all_opponents = set()
+                for game in next_games:
+                    all_teams.add(game['home_team'])
+                    all_teams.add(game['away_team'])
+                    all_opponents.add(game['home_team'])
+                    all_opponents.add(game['away_team'])
+                
+                target_teams = list(all_teams)
+                target_opponents = list(all_opponents)
+                target_game_time = next_games[0]['game_time_str']
+                
+                cprint(f"🎯 Time-based filtering: Only scraping {len(next_games)} game(s) at {target_game_time}", "yellow")
+                cprint(f"   Teams: {', '.join(sorted(all_teams))}", "cyan")
+            else:
+                cprint("⚠️  No upcoming games found, scraping all today's games", "yellow")
+        except Exception as e:
+            cprint(f"⚠️  Error getting next games: {e}, scraping all today's games", "yellow")
     
     with SB(uc=True, test=True, locale="en", ad_block=True) as sb:
         # Initialize the browser session
         sheets_service = initialize_browser_session(sb)
         
-        # Scrape the selected stats
-        scrape_selected_stats(sb, sheets_service, selected_stat_types)
+        # Scrape the selected stats with optional time filtering
+        scrape_selected_stats(sb, sheets_service, selected_stat_types, 
+                            target_teams=target_teams, 
+                            target_opponents=target_opponents, 
+                            target_game_time=target_game_time,
+                            stop_on_different_date=True)
         
         sb.cdp.sleep(2.5)
 
 # Monitoring session moved to monitor.py
 
 # Main execution loop
-def main():
-    """Main execution function with continuous scraping loop"""
+def ask_time_filtering():
+    """Ask if user wants to use time-based filtering"""
+    while True:
+        try:
+            response = input("\nUse time-based filtering (only scrape next game time)? (y/n): ").strip().lower()
+            
+            if response in ['y', 'yes']:
+                return True
+            elif response in ['n', 'no']:
+                return False
+            else:
+                cprint("Please enter 'y' for yes or 'n' for no.", "red")
+                
+        except KeyboardInterrupt:
+            cprint("\nExiting...", "yellow")
+            exit(0)
+
+def run_interactive_scraping():
+    """Run interactive scraping with user menus - for standalone use"""
     cprint("Welcome to PrizePicks Scraper!", "green", attrs=["bold"])
     cprint("This tool will help you scrape player projections from PrizePicks.", "cyan")
     
@@ -828,13 +1371,16 @@ def main():
     else:
         cprint("⚠️  Live betting filtering is DISABLED - All players will be tracked including live betting", "red")
     
+    # Ask about time filtering
+    use_time_filtering = ask_time_filtering()
+    
     try:
         while True:
             # Get user selection
             selected_stat_types = get_user_selection()
             
-            # Run regular scraping session
-            run_scraping_session(selected_stat_types)
+            # Run regular scraping session with time filtering option
+            run_scraping_session(selected_stat_types, use_time_filtering=use_time_filtering)
             
             # Ask if user wants to continue
             if not ask_continue():
@@ -845,6 +1391,39 @@ def main():
         cprint("\n\nExiting...", "yellow")
     except Exception as e:
         cprint(f"\nAn error occurred: {e}", "red")
+
+def run_non_interactive_scraping(selected_stat_types=None, use_time_filtering=True):
+    """Run non-interactive scraping - for use from main menu"""
+    cprint("🎯 Starting PrizePicks Scraper (Non-Interactive Mode)...", "green", attrs=["bold"])
+    
+    if SKIP_LIVE_BETTING:
+        cprint("🚫 Live betting filtering is ENABLED - Players with 'Starting' indicators will be skipped", "yellow")
+    else:
+        cprint("⚠️  Live betting filtering is DISABLED - All players will be tracked including live betting", "red")
+    
+    # Use provided stat types or default to all
+    if selected_stat_types is None:
+        selected_stat_types = get_all_stat_types()
+    
+    cprint(f"📊 Selected stat types: {', '.join(selected_stat_types)}", "cyan")
+    cprint(f"⏰ Time filtering: {'Enabled' if use_time_filtering else 'Disabled'}", "cyan")
+    
+    try:
+        # Run scraping session
+        run_scraping_session(selected_stat_types, use_time_filtering=use_time_filtering)
+        cprint("✅ PrizePicks scraping completed successfully!", "green", attrs=["bold"])
+        return True
+        
+    except KeyboardInterrupt:
+        cprint("\n\nScraping cancelled by user", "yellow")
+        return False
+    except Exception as e:
+        cprint(f"\nAn error occurred during scraping: {e}", "red")
+        return False
+
+def main():
+    """Main execution function - calls interactive version for standalone use"""
+    run_interactive_scraping()
 
 # Run the main function
 if __name__ == "__main__":

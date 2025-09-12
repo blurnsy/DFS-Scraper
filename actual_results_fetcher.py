@@ -171,12 +171,83 @@ class ActualResultsFetcher:
             if not stat_attr:
                 return None
             
+            player_name_lower = player_name.lower().strip()
+            player_match = None
+            
             # Search through all players in the boxscore
             for player in boxscore.away_players + boxscore.home_players:
-                if player.name.lower() == player_name.lower():
-                    if hasattr(player, stat_attr):
-                        value = getattr(player, stat_attr)
-                        return float(value) if value is not None else 0.0
+                pbp_name = player.name.lower().strip()
+                
+                # Try exact match first
+                if pbp_name == player_name_lower:
+                    player_match = player
+                    break
+                
+                # Try partial match
+                if player_match is None:
+                    name_parts = player_name_lower.split()
+                    pbp_parts = pbp_name.split()
+                    if len(name_parts) >= 2 and len(pbp_parts) >= 2:
+                        if (name_parts[0] in pbp_parts[0] and 
+                            name_parts[-1] in pbp_parts[-1]):
+                            player_match = player
+                            break
+                
+                # Try abbreviated name matching (e.g., "Jalen Hurts" vs "J.Hurts" or "J Hurts")
+                if player_match is None:
+                    # Handle "J.Hurts" format
+                    if '.' in pbp_name:
+                        pbp_parts = pbp_name.split('.')
+                        if len(pbp_parts) == 2:
+                            first_initial = pbp_parts[0]
+                            last_name = pbp_parts[1]
+                            if (player_name_lower.split()[0].startswith(first_initial) and 
+                                player_name_lower.endswith(last_name)):
+                                player_match = player
+                                break
+                    
+                    # Handle "J Hurts" format (first initial + space + last name)
+                    elif ' ' in pbp_name:
+                        pbp_parts = pbp_name.split(' ', 1)
+                        if len(pbp_parts) == 2 and len(pbp_parts[0]) == 1:
+                            first_initial = pbp_parts[0]
+                            last_name = pbp_parts[1]
+                            if (player_name_lower.split()[0].startswith(first_initial) and 
+                                player_name_lower.endswith(last_name)):
+                                player_match = player
+                                break
+                
+                # Try reverse abbreviated matching
+                if player_match is None:
+                    name_parts = player_name_lower.split()
+                    if len(name_parts) >= 2:
+                        first_name = name_parts[0]
+                        last_name = name_parts[-1]
+                        first_initial = first_name[0]
+                        
+                        # Handle "J.Hurts" format
+                        if '.' in pbp_name:
+                            pbp_parts = pbp_name.split('.')
+                            if len(pbp_parts) == 2:
+                                pbp_initial = pbp_parts[0]
+                                pbp_last = pbp_parts[1]
+                                if (first_initial == pbp_initial and last_name == pbp_last):
+                                    player_match = player
+                                    break
+                        
+                        # Handle "J Hurts" format
+                        elif ' ' in pbp_name:
+                            pbp_parts = pbp_name.split(' ', 1)
+                            if len(pbp_parts) == 2 and len(pbp_parts[0]) == 1:
+                                pbp_initial = pbp_parts[0]
+                                pbp_last = pbp_parts[1]
+                                if (first_initial == pbp_initial and last_name == pbp_last):
+                                    player_match = player
+                                    break
+            
+            if player_match and hasattr(player_match, stat_attr):
+                value = getattr(player_match, stat_attr)
+                return float(value) if value is not None else 0.0
             
             return None
             
@@ -189,39 +260,112 @@ class ActualResultsFetcher:
             if not boxscore:
                 return None
             
+            player_name_lower = player_name.lower().strip()
+            player_match = None
+            
+            # Search through all players in the boxscore
             for player in boxscore.away_players + boxscore.home_players:
-                if player.name.lower() == player_name.lower():
-                    if stat_type == 'Rush+Rec Yds':
-                        rush_yards = float(player.rushing_yards) if player.rushing_yards else 0.0
-                        rec_yards = float(player.receiving_yards) if player.receiving_yards else 0.0
-                        return rush_yards + rec_yards
+                pbp_name = player.name.lower().strip()
+                
+                # Try exact match first
+                if pbp_name == player_name_lower:
+                    player_match = player
+                    break
+                
+                # Try partial match
+                if player_match is None:
+                    name_parts = player_name_lower.split()
+                    pbp_parts = pbp_name.split()
+                    if len(name_parts) >= 2 and len(pbp_parts) >= 2:
+                        if (name_parts[0] in pbp_parts[0] and 
+                            name_parts[-1] in pbp_parts[-1]):
+                            player_match = player
+                            break
+                
+                # Try abbreviated name matching (e.g., "Jalen Hurts" vs "J.Hurts" or "J Hurts")
+                if player_match is None:
+                    # Handle "J.Hurts" format
+                    if '.' in pbp_name:
+                        pbp_parts = pbp_name.split('.')
+                        if len(pbp_parts) == 2:
+                            first_initial = pbp_parts[0]
+                            last_name = pbp_parts[1]
+                            if (player_name_lower.split()[0].startswith(first_initial) and 
+                                player_name_lower.endswith(last_name)):
+                                player_match = player
+                                break
                     
-                    elif stat_type == 'Pass+Rush Yds':
-                        pass_yards = float(player.passing_yards) if player.passing_yards else 0.0
-                        rush_yards = float(player.rushing_yards) if player.rushing_yards else 0.0
-                        return pass_yards + rush_yards
-                    
-                    elif stat_type == 'Fantasy Score':
-                        # Basic fantasy scoring: 1 point per 25 passing yards, 4 per passing TD, etc.
-                        pass_yards = float(player.passing_yards) if player.passing_yards else 0.0
-                        pass_tds = float(player.passing_touchdowns) if player.passing_touchdowns else 0.0
-                        rush_yards = float(player.rushing_yards) if player.rushing_yards else 0.0
-                        rush_tds = float(player.rushing_touchdowns) if player.rushing_touchdowns else 0.0
-                        rec_yards = float(player.receiving_yards) if player.receiving_yards else 0.0
-                        rec_tds = float(player.receiving_touchdowns) if player.receiving_touchdowns else 0.0
-                        receptions = float(player.receptions) if player.receptions else 0.0
-                        interceptions = float(player.interceptions) if player.interceptions else 0.0
+                    # Handle "J Hurts" format (first initial + space + last name)
+                    elif ' ' in pbp_name:
+                        pbp_parts = pbp_name.split(' ', 1)
+                        if len(pbp_parts) == 2 and len(pbp_parts[0]) == 1:
+                            first_initial = pbp_parts[0]
+                            last_name = pbp_parts[1]
+                            if (player_name_lower.split()[0].startswith(first_initial) and 
+                                player_name_lower.endswith(last_name)):
+                                player_match = player
+                                break
+                
+                # Try reverse abbreviated matching
+                if player_match is None:
+                    name_parts = player_name_lower.split()
+                    if len(name_parts) >= 2:
+                        first_name = name_parts[0]
+                        last_name = name_parts[-1]
+                        first_initial = first_name[0]
                         
-                        fantasy_points = (
-                            (pass_yards / 25) + (pass_tds * 4) + (rush_yards / 10) + (rush_tds * 6) +
-                            (rec_yards / 10) + (rec_tds * 6) + receptions - (interceptions * 2)
-                        )
-                        return fantasy_points
+                        # Handle "J.Hurts" format
+                        if '.' in pbp_name:
+                            pbp_parts = pbp_name.split('.')
+                            if len(pbp_parts) == 2:
+                                pbp_initial = pbp_parts[0]
+                                pbp_last = pbp_parts[1]
+                                if (first_initial == pbp_initial and last_name == pbp_last):
+                                    player_match = player
+                                    break
+                        
+                        # Handle "J Hurts" format
+                        elif ' ' in pbp_name:
+                            pbp_parts = pbp_name.split(' ', 1)
+                            if len(pbp_parts) == 2 and len(pbp_parts[0]) == 1:
+                                pbp_initial = pbp_parts[0]
+                                pbp_last = pbp_parts[1]
+                                if (first_initial == pbp_initial and last_name == pbp_last):
+                                    player_match = player
+                                    break
+            
+            if player_match:
+                if stat_type == 'Rush+Rec Yds':
+                    rush_yards = float(player_match.rushing_yards) if player_match.rushing_yards else 0.0
+                    rec_yards = float(player_match.receiving_yards) if player_match.receiving_yards else 0.0
+                    return rush_yards + rec_yards
+                
+                elif stat_type == 'Pass+Rush Yds':
+                    pass_yards = float(player_match.passing_yards) if player_match.passing_yards else 0.0
+                    rush_yards = float(player_match.rushing_yards) if player_match.rushing_yards else 0.0
+                    return pass_yards + rush_yards
+                
+                elif stat_type == 'Fantasy Score':
+                    # Basic fantasy scoring: 1 point per 25 passing yards, 4 per passing TD, etc.
+                    pass_yards = float(player_match.passing_yards) if player_match.passing_yards else 0.0
+                    pass_tds = float(player_match.passing_touchdowns) if player_match.passing_touchdowns else 0.0
+                    rush_yards = float(player_match.rushing_yards) if player_match.rushing_yards else 0.0
+                    rush_tds = float(player_match.rushing_touchdowns) if player_match.rushing_touchdowns else 0.0
+                    rec_yards = float(player_match.receiving_yards) if player_match.receiving_yards else 0.0
+                    rec_tds = float(player_match.receiving_touchdowns) if player_match.receiving_touchdowns else 0.0
+                    receptions = float(player_match.receptions) if player_match.receptions else 0.0
+                    interceptions = float(player_match.interceptions) if player_match.interceptions else 0.0
                     
-                    elif stat_type == 'Tackles+Ast':
-                        tackles = float(player.tackles) if player.tackles else 0.0
-                        assists = float(player.assists) if player.assists else 0.0
-                        return tackles + assists
+                    fantasy_points = (
+                        (pass_yards / 25) + (pass_tds * 4) + (rush_yards / 10) + (rush_tds * 6) +
+                        (rec_yards / 10) + (rec_tds * 6) + receptions - (interceptions * 2)
+                    )
+                    return fantasy_points
+                
+                elif stat_type == 'Tackles+Ast':
+                    tackles = float(player_match.tackles) if player_match.tackles else 0.0
+                    assists = float(player_match.assists) if player_match.assists else 0.0
+                    return tackles + assists
             
             return None
             

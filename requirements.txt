@@ -3,5 +3,8 @@ pyautogui
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
-sportsreference
+nfl-data-py
+pandas
 termcolor
+python-dotenv
+pytz
