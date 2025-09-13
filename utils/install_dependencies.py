@@ -15,7 +15,7 @@ def install_package(package):
 
 def main():
     """Install all required dependencies"""
-    print("Installing PrizePicks Scraper dependencies...")
+    print("Installing DFS Scraper dependencies...")
     print("=" * 50)
     
     packages = [

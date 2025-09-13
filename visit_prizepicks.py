@@ -1363,7 +1363,7 @@ def ask_time_filtering():
 
 def run_interactive_scraping():
     """Run interactive scraping with user menus - for standalone use"""
-    cprint("Welcome to PrizePicks Scraper!", "green", attrs=["bold"])
+    cprint("Welcome to DFS Scraper - PrizePicks Module!", "green", attrs=["bold"])
     cprint("This tool will help you scrape player projections from PrizePicks.", "cyan")
     
     if SKIP_LIVE_BETTING:
@@ -1384,7 +1384,7 @@ def run_interactive_scraping():
             
             # Ask if user wants to continue
             if not ask_continue():
-                cprint("\nThank you for using PrizePicks Scraper!", "green", attrs=["bold"])
+                cprint("\nThank you for using DFS Scraper!", "green", attrs=["bold"])
                 break
                 
     except KeyboardInterrupt:
@@ -1394,7 +1394,7 @@ def run_interactive_scraping():
 
 def run_non_interactive_scraping(selected_stat_types=None, use_time_filtering=True):
     """Run non-interactive scraping - for use from main menu"""
-    cprint("🎯 Starting PrizePicks Scraper (Non-Interactive Mode)...", "green", attrs=["bold"])
+    cprint("🎯 Starting DFS Scraper - PrizePicks Module (Non-Interactive Mode)...", "green", attrs=["bold"])
     
     if SKIP_LIVE_BETTING:
         cprint("🚫 Live betting filtering is ENABLED - Players with 'Starting' indicators will be skipped", "yellow")
