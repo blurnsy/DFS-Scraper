@@ -1,13 +1,15 @@
-# PrizePicks Scraper with Game Time Monitoring
+# DFS Scraper with Game Time Monitoring
 
-A Python script that scrapes player projections from PrizePicks and includes automatic monitoring for NFL games starting within 60 minutes using PrizePicks' own game time data.
+A comprehensive Python application that scrapes player projections from both PrizePicks and Underdog Fantasy, includes automatic game monitoring, and provides detailed analysis tools for sports betting data.
 
 ## Features
 
-- **Manual Scraping**: Scrape specific stat types or all stats from PrizePicks
-- **Automatic Monitoring**: Monitor game times from PrizePicks and auto-scrape when games are 60 minutes away
-- **Google Sheets Integration**: Automatically upload data to Google Sheets
-- **Smart Updates**: Only updates changed prop lines, preserves existing data
+- **Multi-Platform Scraping**: Scrape specific stat types or all stats from both PrizePicks and Underdog Fantasy
+- **Automatic Game Monitoring**: Monitor game times and auto-scrape both platforms when games are 60 minutes away
+- **Google Sheets Integration**: Automatically upload data to Google Sheets with smart updates
+- **Results Analysis**: Comprehensive analysis tools for betting performance and trends
+- **NFL Stats Integration**: Official NFL statistics using nfl_data_py
+- **Testing Framework**: Built-in testing tools for validation and debugging
 - **Live Betting Filter**: Automatically skips players when games have started (configurable)
 
 ## Installation
@@ -38,36 +40,51 @@ python main.py
 ```
 
 This will show you a menu with options:
-1. **🎯 Scrape PrizePicks** - Run the main scraper
-2. **📊 Fetch Actual Results** - Run the results fetcher
-3. **⏰ Game Monitor** - Monitor for upcoming games and auto-scrape
-4. **🛠️ Maintenance Tools** - Access utility scripts
-5. **❌ Exit** - Quit the application
+1. **📊 Scrape Stats** - Scrape from PrizePicks or Underdog Fantasy
+2. **📈 Fetch Game Stats** - Fetch official NFL statistics
+3. **⏰ Game Monitor** - Monitor for upcoming games and auto-scrape both platforms
+4. **📈 Results Analyzer** - Analyze betting performance and trends
+5. **🧪 Testing Tools** - Run tests and validation tools
+6. **🛠️ Maintenance Tools** - Access utility scripts
+7. **❌ Exit** - Quit the application
 
-### PrizePicks Scraper Options
+### Scraping Options
 When you select option 1, you'll get the scraper menu:
-- Individual stat types (Pass Yards, Rush Yards, etc.)
-- All Stats (scrapes everything)
+- **PrizePicks**: Individual stat types (Pass Yards, Rush Yards, etc.) or All Stats
+- **Underdog Fantasy**: Individual prop types or All Props
+- Both platforms support time-based filtering (next game only)
 
 ### Game Monitor
 When you select option 3, you'll get the monitoring mode:
 - Continuously monitors Google Sheets for upcoming games
-- Automatically triggers scraping when games are within 60 minutes
+- Automatically triggers sequential scraping (PrizePicks → Underdog) when games are within 60 minutes
 - No browser needed until games are detected
+
+### Results Analyzer
+When you select option 4, you'll get analysis tools:
+- **Quick Summary Report**: Overview of betting performance
+- **Best Performers Report**: Top performing players and teams
+- **Analyze by Stat Type**: Detailed analysis by specific statistics
 
 ### How Monitoring Works
 The monitoring mode (option 3) uses your existing Google Sheets data to:
 - Read game times from all existing sheets every 2 minutes (no browser needed)
 - Parse game time strings (e.g., "Thu 7:20pm", "Sun 1:00pm")
 - Detect games starting within 60 minutes
-- Automatically open browser and trigger final scraping when games are found
+- Automatically open browser and trigger sequential scraping (PrizePicks → Underdog) when games are found
 - Avoid duplicate triggers for the same game
 
 1. **Data Source**: Reads game times from your existing Google Sheets (no re-scraping needed)
-2. **Time Parsing**: Converts PrizePicks time format to datetime objects
+2. **Time Parsing**: Converts time format to datetime objects
 3. **60-Minute Window**: Triggers final scraping when games are 0-60 minutes away
-4. **Final Scrape**: Runs complete scraping process for all stat types (last update before games)
+4. **Sequential Scraping**: Runs PrizePicks first, then Underdog Fantasy (last update before games)
 5. **Continuous Monitoring**: Keeps checking until stopped (Ctrl+C)
+
+### Testing Tools
+When you select option 5, you'll get testing tools:
+- **Quick Test**: Connection and component validation
+- **Mock Mode Test**: Simulate results without live scraping
+- **Comprehensive Test**: Full feature testing and validation
 
 ## Configuration
 
@@ -89,31 +106,57 @@ The scraper automatically detects when games have started by looking for "Starti
 - `seleniumbase`: Web scraping and browser automation
 - `pyautogui`: Mouse coordinate clicking
 - `google-api-python-client`: Google Sheets integration
-- `datetime`: Time calculations and parsing
+- `nfl_data_py`: Official NFL statistics
+- `termcolor`: Colored terminal output
+- `python-dotenv`: Environment variable management
+- `pandas`: Data analysis and manipulation
+
+## Key Features & Improvements
+
+### Multi-Platform Support
+- **PrizePicks**: Original platform with comprehensive stat coverage
+- **Underdog Fantasy**: Additional platform with different prop types and odds
+- **Sequential Monitoring**: Automatically scrapes both platforms when games are approaching
+
+### Advanced Analysis
+- **Performance Tracking**: Track over/under hit rates by player, team, and stat type
+- **Trend Analysis**: Identify patterns in betting performance
+- **Comprehensive Reports**: Multiple analysis views for different insights
+
+### Robust Testing
+- **Component Validation**: Test individual features and connections
+- **Mock Mode**: Simulate results without live scraping
+- **Comprehensive Testing**: Full system validation
 
 ## Notes
 
 - Monitoring mode reads game times from your existing Google Sheets data (no re-scraping needed)
 - Monitoring mode runs continuously until manually stopped
-- All existing scraping functionality remains unchanged
-- Google Sheets integration is required for monitoring mode
-- Game time parsing supports formats like "Thu 7:20pm", "Sun 1:00pm"
-- Final scraping ensures you have the latest prop lines before games start
+- Sequential scraping ensures both platforms are updated before games start
+- Google Sheets integration is required for monitoring and analysis features
+- Game time parsing supports formats like "Thu 7:20pm", "Sun 12:00pm"
+- Analysis tools require completed bet data in your Google Sheets
 
 ## Project Structure
 
 ```
 Prizepicks/
 ├── main.py                    # Main entry point with menu system
-├── visit_prizepicks.py        # PrizePicks scraper (core functionality)
+├── visit_prizepicks.py        # PrizePicks scraper
+├── visit_underdog.py          # Underdog Fantasy scraper
 ├── monitor.py                 # Game monitoring and auto-scraping
+├── nfl_stats_fetcher.py       # NFL statistics fetcher
 ├── actual_results_fetcher.py  # Results fetcher
+├── results_analyzer.py        # Betting analysis tools
+├── stat_mapping.py            # Stat type standardization
+├── rate_limited_sheets.py     # Google Sheets rate limiting
 ├── utils/                     # Maintenance tools
 │   ├── __init__.py
 │   ├── install_dependencies.py
 │   └── mouse_coordinates.py
 ├── requirements.txt           # Python dependencies
 ├── service-account-key.json   # Google Sheets API key
+├── underdog_config.env        # Underdog Fantasy configuration
 └── README.md                 # This file
 ```
 
