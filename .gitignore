@@ -47,3 +47,6 @@ service-account-key.json
 *.json
 !package.json
 !package-lock.json
+
+# Hide specific files from GitHub
+visit_underdog.py
